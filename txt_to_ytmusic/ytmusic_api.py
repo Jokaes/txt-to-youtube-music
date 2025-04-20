@@ -120,40 +120,60 @@ def initialize_ytmusic(headers_file='headers_auth.json', non_interactive=False):
         sys.exit(1)
 
 
-def search_song(yt, query):
+def search_song(yt, query, perfect_match=False):
     """Search for a song on YouTube Music.
     
     Args:
         yt (YTMusic): Initialized YouTube Music API client.
         query (str): The song query to search for.
+        perfect_match (bool, optional): Whether to require a perfect match. Defaults to False.
         
     Returns:
         dict: The search result entry, or None if not found.
     """
-    results = yt.search(query)
+    # Add quotes around the query for perfect match searches
+    formatted_query = f'"{query}"' if perfect_match else query
+    
+    # First search for songs
+    results = yt.search(formatted_query, filter='songs', ignore_spelling=True, limit=100)
     if not results:
-        print(f"  No results found for '{query}'. Skipping.")
+        print(f"  No song results found for '{query}'. Skipping.")
+        # Don't return None here - we'll try searching for videos below
+    else:
+        if perfect_match:
+            # Look for a perfect match (ignoring case)
+            query_lower = query.lower()
+            for result in results:
+                title = result.get('title', '').lower()
+                if title == query_lower:
+                    print(f"  Perfect match found for '{query}': {result.get('title')}")
+                    return result
+            
+            # If perfect match was required but not found, return None
+            print(f"  No perfect match found for '{query}'. Skipping.")
+        else:
+            # Take the first song result when perfect match is not required
+            return results[0]
+    
+    # If no songs are found, fall back to videos with a separate search
+    print(f"  No song results found for '{query}'. Falling back to video search.")
+    video_results = yt.search(formatted_query, filter='videos', ignore_spelling=True, limit=100)
+    
+    if not video_results:
+        print(f"  No video results found for '{query}'. Skipping.")
         return None
     
-    # Filter results to only include songs
-    song_results = [
-        result for result in results 
-        if result.get('resultType') == 'song'
-    ]
+    if perfect_match and video_results:
+        # Look for a perfect match in videos if songs weren't found
+        query_lower = query.lower()
+        for result in video_results:
+            title = result.get('title', '').lower()
+            if title == query_lower:
+                print(f"  Perfect video match found for '{query}': {result.get('title')}")
+                return result
+        
+        # If perfect match was required but not found, return None
+        print(f"  No perfect video match found for '{query}'. Skipping.")
+        return None
     
-    if song_results:
-        # Take the first song result
-        return song_results[0]
-    else:
-        # If no songs are found, fall back to videos
-        print(f"  No song results found for '{query}'. Falling back to video.")
-        video_results = [
-            result for result in results 
-            if result.get('resultType') == 'video'
-        ]
-        
-        if not video_results:
-            print(f"  No video results found for '{query}'. Skipping.")
-            return None
-        
-        return video_results[0]
+    return video_results[0]

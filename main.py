@@ -53,6 +53,11 @@ def parse_arguments():
         help="Allow duplicate songs in playlist (default: False)"
     )
     parser.add_argument(
+        "--perfect-match",
+        action="store_true",
+        help="Only add songs that perfectly match the query (ignoring case)"
+    )
+    parser.add_argument(
         "--auth",
         default="headers_auth.json",
         help="Path to the authentication file (default: headers_auth.json)"
@@ -125,13 +130,23 @@ def main():
         
         logger.info(f"Duplicate songs allowed: {allow_duplicates}")
         
+        # Handle perfect match setting
+        perfect_match = args.perfect_match
+        
+        # If not in non-interactive mode, ask about perfect matching
+        if not args.non_interactive and not args.perfect_match:
+            perfect_match_input = input("Only add songs that perfectly match queries? (y/n) [n]: ").strip().lower()
+            perfect_match = perfect_match_input == 'y'
+        
+        logger.info(f"Perfect match required: {perfect_match}")
+        
         # Begin performance measurement (after user input to avoid skewing metrics)
         start_time = datetime.datetime.now()
         logger.info(f"Starting song processing at {start_time}")
         
         # Process songs and add them to the playlist
         try:
-            results = add_songs_to_playlist(yt, playlist_id, song_queries, allow_duplicates=allow_duplicates)
+            results = add_songs_to_playlist(yt, playlist_id, song_queries, allow_duplicates=allow_duplicates, perfect_match=perfect_match)
             logger.info(f"Song processing completed with {len(results['successful'])} successful additions")
         except Exception as e:
             logger.critical(f"Failed during song processing: {e}")
