@@ -219,7 +219,7 @@ def add_item_to_playlist(yt, playlist_id, video_id, query, retries=0, max_retrie
         return "failure", unique_songs
 
 
-def add_songs_to_playlist(yt, playlist_id, song_queries, max_retries=2, retry_delay=6, allow_duplicates=False):
+def add_songs_to_playlist(yt, playlist_id, song_queries, max_retries=2, retry_delay=6, allow_duplicates=False, perfect_match=False):
     """Add songs from queries to the created playlist with retry mechanism.
     
     Args:
@@ -229,6 +229,7 @@ def add_songs_to_playlist(yt, playlist_id, song_queries, max_retries=2, retry_de
         max_retries (int, optional): Maximum number of retries on conflict. Defaults to 2.
         retry_delay (int, optional): Base delay between retries in seconds. Defaults to 6.
         allow_duplicates (bool, optional): Whether to allow duplicate songs. Defaults to False.
+        perfect_match (bool, optional): Only add songs that perfectly match the query. Defaults to False.
         
     Returns:
         dict: Results containing counts of successful, failed, and not found songs.
@@ -252,7 +253,7 @@ def add_songs_to_playlist(yt, playlist_id, song_queries, max_retries=2, retry_de
             pbar.set_description(f"Song {current}/{total}")
             
             # Search for the song
-            result = search_song(yt, query)
+            result = search_song(yt, query, perfect_match=perfect_match)
             
             if not result:
                 not_found.append(query)

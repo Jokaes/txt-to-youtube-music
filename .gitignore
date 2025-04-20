@@ -18,7 +18,7 @@ logs/
 *.log
 
 # Authentication data
-headers_auth.json
+headers_auth*.json
 
 # IDE specific files
 .idea/
@@ -32,6 +32,5 @@ Thumbs.db
 
 # Backup files
 *.bak
-
 # Text files with song lists
 *.txt
