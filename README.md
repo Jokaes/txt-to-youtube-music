@@ -46,6 +46,7 @@ python main.py -f songs.txt -t "My Playlist" -p private
 | `-d`, `--description` | Playlist description (default: same as title) |
 | `-p`, `--privacy` | Playlist privacy: public, private, or unlisted (default: will prompt) |
 | `--duplicates` | Allow duplicate songs in playlist (default: False) |
+| `--perfect-match` | Only add songs that perfectly match the query (ignoring case) |
 | `--auth` | Path to authentication file (default: headers_auth.json) |
 | `--non-interactive` | Run in non-interactive mode using defaults or provided arguments |
 
