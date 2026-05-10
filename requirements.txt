@@ -1,0 +1,4 @@
+# Python >=3.7
+ytmusicapi==1.10.3
+chardet==5.0.0
+tqdm==4.65.0

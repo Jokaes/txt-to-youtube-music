@@ -34,3 +34,4 @@ Thumbs.db
 *.bak
 # Text files with song lists
 *.txt
+!requirements.txt
