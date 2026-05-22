@@ -146,8 +146,7 @@ def create_playlist(yt, privacy_status=None, title=None, description=None, non_i
         )
         
         if not playlist_id:
-            print("Error: Playlist creation returned None")
-            sys.exit(1)
+            raise RuntimeError("Playlist creation returned None")
             
         print(f"Playlist '{playlist_title}' created successfully with ID: {playlist_id}")
         return playlist_id, playlist_title
@@ -156,7 +155,7 @@ def create_playlist(yt, privacy_status=None, title=None, description=None, non_i
         print("Debug: Ensure browser authentication is properly set up.")
         # Print more details about the error
         traceback.print_exc()
-        sys.exit(1)
+        raise
 
 
 def add_item_to_playlist(yt, playlist_id, video_id, query, retries=0, max_retries=2, retry_delay=6, allow_duplicates=False, unique_songs=None):
