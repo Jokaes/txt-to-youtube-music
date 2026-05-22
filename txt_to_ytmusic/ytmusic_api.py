@@ -1,9 +1,106 @@
 """YouTube Music API interactions for TxtToYoutubeMusic."""
 
+import json
 import os
-import sys
 import traceback
 from ytmusicapi import YTMusic
+
+
+TRANSIENT_AUTH_HEADER_NAMES = {
+    "accept-encoding",
+    "alt-used",
+    "connection",
+    "content-encoding",
+    "content-length",
+    "host",
+    "te",
+}
+
+
+def _get_header_value(headers, header_name):
+    """Return a header value from a dict using case-insensitive lookup."""
+    for key, value in headers.items():
+        if key.lower() == header_name.lower():
+            return value
+    return None
+
+
+def sanitize_auth_headers(headers):
+    """Remove transient browser transport headers from copied auth data."""
+    if not isinstance(headers, dict):
+        raise ValueError("Authentication data must be a JSON object with header names and values.")
+
+    sanitized_headers = {}
+    for key, value in headers.items():
+        if key.lower() in TRANSIENT_AUTH_HEADER_NAMES:
+            continue
+        sanitized_headers[key] = value
+
+    return sanitized_headers
+
+
+def validate_auth_headers(headers):
+    """Validate that auth headers look usable for YouTube Music requests."""
+    if not isinstance(headers, dict):
+        raise ValueError("Authentication data must be a JSON object with header names and values.")
+
+    cookie = _get_header_value(headers, "cookie")
+    if not cookie:
+        raise ValueError("Authentication data is missing the Cookie header.")
+
+    routing_headers = {
+        "host": _get_header_value(headers, "host"),
+        "origin": _get_header_value(headers, "origin"),
+        "x-origin": _get_header_value(headers, "x-origin"),
+        "referer": _get_header_value(headers, "referer"),
+        "alt-used": _get_header_value(headers, "alt-used"),
+    }
+    music_domain_header_found = False
+    wrong_domain_headers = []
+    for name, value in routing_headers.items():
+        if not value:
+            continue
+
+        value_lower = str(value).lower()
+        if "music.youtube.com" in value_lower:
+            music_domain_header_found = True
+        elif "youtube.com" in value_lower:
+            wrong_domain_headers.append(name)
+
+    if wrong_domain_headers:
+        joined_headers = ", ".join(wrong_domain_headers)
+        raise ValueError(
+            "Authentication headers were copied from a non-music YouTube page. "
+            "Copy the request headers from a signed-in https://music.youtube.com request "
+            f"instead. Problem headers: {joined_headers}."
+        )
+
+    if not music_domain_header_found:
+        raise ValueError(
+            "Authentication headers do not include a https://music.youtube.com origin or referer. "
+            "Copy the request headers from a signed-in request on https://music.youtube.com."
+        )
+
+
+def validate_auth_headers_file(headers_file):
+    """Validate an auth JSON file before passing it to ytmusicapi."""
+    try:
+        with open(headers_file, "r", encoding="utf-8") as file_obj:
+            headers = json.load(file_obj)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Authentication file '{headers_file}' is not valid JSON: {exc.msg}."
+        ) from exc
+
+    validate_auth_headers(headers)
+    sanitized_headers = sanitize_auth_headers(headers)
+
+    if sanitized_headers != headers:
+        with open(headers_file, "w", encoding="utf-8") as file_obj:
+            json.dump(sanitized_headers, file_obj, indent=4, ensure_ascii=False)
+            file_obj.write("\n")
+
+    return sanitized_headers
 
 
 def check_headers_file(headers_file, non_interactive=False):
@@ -82,7 +179,8 @@ def initialize_ytmusic(headers_file='headers_auth.json', non_interactive=False):
         print("Initializing YouTube Music API...")
                 
         if not check_headers_file(headers_file, non_interactive):
-            sys.exit(1)
+            raise FileNotFoundError(f"Authentication file '{headers_file}' could not be loaded or created.")
+        validate_auth_headers_file(headers_file)
         
         # Try to initialize YTMusic with the headers file
         try:
@@ -101,23 +199,24 @@ def initialize_ytmusic(headers_file='headers_auth.json', non_interactive=False):
                 if recreate_choice == "" or recreate_choice == "y":
                     # Run the setup process again
                     if create_auth_file(headers_file):
+                        validate_auth_headers_file(headers_file)
                         # Try to initialize again with the new file
                         yt = YTMusic(headers_file)
                         print("YouTube Music API initialized successfully with new credentials.")
                         return yt
                     else:
-                        print("Failed to recreate authentication file.")
-                        sys.exit(1)
+                        raise RuntimeError("Failed to recreate authentication file.")
                 else:
-                    print("Setup cancelled. Please fix the authentication file manually.")
-                    sys.exit(1)
+                    raise PermissionError("Setup cancelled. Please fix the authentication file manually.")
             else:
-                print("Non-interactive mode: Cannot recreate authentication file. Exiting.")
-                sys.exit(1)
+                raise PermissionError(
+                    "Non-interactive mode: Cannot recreate authentication file or auth is invalid. "
+                    "Copy fresh headers from a signed-in https://music.youtube.com request."
+                ) from auth_error
     except Exception as e:
         print(f"Error initializing YouTube Music API: {e}")
         traceback.print_exc()
-        sys.exit(1)
+        raise e
 
 
 def search_song(yt, query, perfect_match=False):
