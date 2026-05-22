@@ -67,6 +67,16 @@ def parse_arguments():
         action="store_true",
         help="Run in non-interactive mode using defaults or provided arguments"
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Run the Graphical User Interface (default if no other args are provided)"
+    )
+    parser.add_argument(
+        "--cli",
+        action="store_true",
+        help="Force running in Command Line Interface mode even if no args are specified"
+    )
     
     return parser.parse_args()
 
@@ -80,6 +90,17 @@ def main():
     # Parse command line arguments first, for logging setup
     args = parse_arguments()
     
+    # If no arguments are passed, or --gui was specified, and --cli wasn't, try to run GUI
+    has_cli_args = len(sys.argv) > 1 and not args.gui
+    if (args.gui or not has_cli_args) and not args.cli:
+        try:
+            print("Launching Graphical User Interface (GUI)...")
+            from txt_to_ytmusic.gui import launch_gui
+            launch_gui()
+            return 0
+        except (ImportError, Exception) as e:
+            print(f"Failed to start GUI (falling back to CLI mode): {e}")
+
     # Setup logging with INFO level
     logger = setup_logging(logging.INFO)
     
