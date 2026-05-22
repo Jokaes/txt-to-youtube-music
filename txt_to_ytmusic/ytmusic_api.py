@@ -2,7 +2,9 @@
 
 import json
 import os
+import re
 import traceback
+import unicodedata
 from ytmusicapi import YTMusic
 
 
@@ -14,6 +16,19 @@ TRANSIENT_AUTH_HEADER_NAMES = {
     "content-length",
     "host",
     "te",
+}
+
+NOISY_RESULT_TERMS = {
+    "live",
+    "cover",
+    "remix",
+    "mix",
+    "karaoke",
+    "nightcore",
+    "slowed",
+    "sped",
+    "instrumental",
+    "fancam",
 }
 
 
@@ -101,6 +116,230 @@ def validate_auth_headers_file(headers_file):
             file_obj.write("\n")
 
     return sanitized_headers
+
+
+def _normalize_search_text(text):
+    """Normalize common clipboard punctuation and spacing for YTMusic queries."""
+    translation_table = str.maketrans({
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "‐": "-",
+        "‑": "-",
+        "‒": "-",
+        "–": "-",
+        "—": "-",
+        "−": "-",
+        "﹘": "-",
+        "﹣": "-",
+        "－": "-",
+    })
+    normalized_text = unicodedata.normalize("NFKC", text)
+    normalized_text = normalized_text.translate(translation_table)
+    normalized_text = re.sub(r"\s+", " ", normalized_text).strip()
+    return normalized_text
+
+
+def _canonicalize_comparison_text(text):
+    """Convert text into a looser comparison form for query/result matching."""
+    normalized_text = _normalize_search_text(text).casefold()
+    normalized_text = unicodedata.normalize("NFKD", normalized_text)
+    normalized_text = "".join(
+        character for character in normalized_text if not unicodedata.combining(character)
+    )
+    normalized_text = normalized_text.replace("-", " ")
+    normalized_text = re.sub(r"[^\w\s]", "", normalized_text)
+    normalized_text = re.sub(r"\s+", " ", normalized_text).strip()
+    return normalized_text
+
+
+def _extract_query_parts(query):
+    """Split a query into two sides when it uses a dash separator."""
+    normalized_query = _normalize_search_text(query).replace('"', '').replace("'", "")
+    parts = [part.strip() for part in re.split(r"\s+-\s+", normalized_query, maxsplit=1)]
+    return [part for part in parts if part]
+
+
+def _build_match_part_groups(query):
+    """Return candidate part groupings for title/artist alignment checks."""
+    explicit_parts = _extract_query_parts(query)
+    if len(explicit_parts) == 2:
+        return [explicit_parts]
+
+    normalized_query = _normalize_search_text(query).replace('"', '').replace("'", "")
+    tokens = normalized_query.split()
+    part_groups = []
+
+    if len(tokens) >= 3:
+        for split_index in range(len(tokens) - 1, 0, -1):
+            left_part = " ".join(tokens[:split_index]).strip()
+            right_part = " ".join(tokens[split_index:]).strip()
+            if left_part and right_part:
+                part_groups.append([left_part, right_part])
+
+    part_groups.append([normalized_query])
+    return part_groups
+
+
+def _contains_all_terms(haystack, needle):
+    """Return True when every token from needle appears in haystack."""
+    haystack_tokens = set(_canonicalize_comparison_text(haystack).split())
+    needle_tokens = set(_canonicalize_comparison_text(needle).split())
+    return bool(needle_tokens) and needle_tokens.issubset(haystack_tokens)
+
+
+def _noise_rank(result):
+    """Prefer canonical releases over live/remix/cover style results."""
+    title_tokens = set(_canonicalize_comparison_text(result.get("title", "")).split())
+    return len(NOISY_RESULT_TERMS.intersection(title_tokens))
+
+
+def _build_search_queries(query):
+    """Build a small set of query variants for robust matching."""
+    normalized_query = _normalize_search_text(query)
+    quoted_stripped_query = normalized_query.replace('"', '').replace("'", "")
+    candidate_queries = [normalized_query]
+
+    if quoted_stripped_query != normalized_query:
+        candidate_queries.append(quoted_stripped_query)
+
+    parts = re.split(r"\s+-\s+", quoted_stripped_query, maxsplit=1)
+    if len(parts) == 2:
+        left_part, right_part = (part.strip() for part in parts)
+        if left_part and right_part:
+            candidate_queries.append(f"{left_part} {right_part}")
+            candidate_queries.append(f"{right_part} {left_part}")
+            candidate_queries.append(right_part)
+            candidate_queries.append(left_part)
+
+    unique_queries = []
+    for candidate_query in candidate_queries:
+        if candidate_query and candidate_query not in unique_queries:
+            unique_queries.append(candidate_query)
+    return unique_queries
+
+
+def _extract_title_artist(query):
+    """Extract title and artist from a query formatted like 'title - artist'."""
+    normalized_query = _normalize_search_text(query).replace('"', '').replace("'", "")
+    parts = re.split(r"\s+-\s+", normalized_query, maxsplit=1)
+    if len(parts) != 2:
+        return normalized_query, None
+
+    title_part, artist_part = (part.strip() for part in parts)
+    return title_part, artist_part or None
+
+
+def _matches_perfect_query(result, query):
+    """Return True when the result exactly matches the user's query."""
+    normalized_title = _canonicalize_comparison_text(result.get('title', ''))
+    if not normalized_title:
+        return False
+
+    query_parts = [
+        _canonicalize_comparison_text(part)
+        for part in _extract_query_parts(query)
+        if _canonicalize_comparison_text(part)
+    ]
+    if len(query_parts) == 2:
+        normalized_artists = [
+            _canonicalize_comparison_text(artist.get('name', ''))
+            for artist in result.get('artists', [])
+            if _canonicalize_comparison_text(artist.get('name', ''))
+        ]
+        if not normalized_artists:
+            return False
+
+        artist_candidates = set(normalized_artists)
+        if len(normalized_artists) > 1:
+            artist_candidates.add(" ".join(normalized_artists))
+
+        left_part, right_part = query_parts
+        return (
+            normalized_title == left_part and right_part in artist_candidates
+        ) or (
+            normalized_title == right_part and left_part in artist_candidates
+        )
+
+    normalized_query = _canonicalize_comparison_text(query)
+    return normalized_title == normalized_query
+
+
+def _pick_search_result(results, query, perfect_query=None):
+    """Prefer song results, then videos, while favoring artist matches when available."""
+    playable_results = [
+        result
+        for result in results
+        if result.get('resultType') in {'song', 'album', 'video'} and result.get('videoId')
+    ]
+
+    def result_type_rank(result):
+        return {
+            'song': 0,
+            'album': 1,
+            'video': 2,
+        }.get(result.get('resultType'), 3)
+
+    def query_alignment_rank(result):
+        title_text = result.get('title', '')
+        artist_text = ' '.join(artist.get('name', '') for artist in result.get('artists', []))
+        combined_text = f"{title_text} {artist_text}".strip()
+        best_rank = 5
+
+        for query_parts in _build_match_part_groups(query):
+            if len(query_parts) >= 2:
+                left_part, right_part = query_parts[0], query_parts[1]
+                title_matches_left = _contains_all_terms(title_text, left_part)
+                title_matches_right = _contains_all_terms(title_text, right_part)
+                artist_matches_left = _contains_all_terms(artist_text, left_part)
+                artist_matches_right = _contains_all_terms(artist_text, right_part)
+
+                if (title_matches_left and artist_matches_right) or (title_matches_right and artist_matches_left):
+                    best_rank = min(best_rank, 0)
+                    continue
+                if title_matches_left or title_matches_right:
+                    best_rank = min(best_rank, 1)
+                    continue
+                if _contains_all_terms(combined_text, left_part) and _contains_all_terms(combined_text, right_part):
+                    best_rank = min(best_rank, 2)
+                    continue
+                if artist_matches_left or artist_matches_right:
+                    best_rank = min(best_rank, 3)
+                    continue
+                best_rank = min(best_rank, 4)
+                continue
+
+            single_part = query_parts[0]
+            if _contains_all_terms(title_text, single_part):
+                best_rank = min(best_rank, 0)
+                continue
+            if _contains_all_terms(combined_text, single_part):
+                best_rank = min(best_rank, 1)
+                continue
+            best_rank = min(best_rank, 2)
+
+        return best_rank
+
+    ranked_results = sorted(
+        playable_results,
+        key=lambda result: (
+            query_alignment_rank(result),
+            result_type_rank(result),
+            _noise_rank(result),
+            len(_canonicalize_comparison_text(result.get('title', ''))),
+        ),
+    )
+
+    if perfect_query:
+        for result in ranked_results:
+            if _matches_perfect_query(result, perfect_query):
+                return result
+        return None
+
+    if ranked_results:
+        return ranked_results[0]
+    return None
 
 
 def check_headers_file(headers_file, non_interactive=False):
@@ -230,49 +469,26 @@ def search_song(yt, query, perfect_match=False):
     Returns:
         dict: The search result entry, or None if not found.
     """
-    # Add quotes around the query for perfect match searches
-    formatted_query = f'"{query}"' if perfect_match else query
-    
-    # First search for songs
-    results = yt.search(formatted_query, filter='songs', ignore_spelling=True, limit=100)
-    if not results:
-        print(f"  No song results found for '{query}'. Skipping.")
-        # Don't return None here - we'll try searching for videos below
+    search_queries = _build_search_queries(query)
+    perfect_query = query if perfect_match else None
+
+    for search_query in search_queries:
+        results = yt.search(search_query, ignore_spelling=True, limit=20)
+        if not results:
+            continue
+
+        selected_result = _pick_search_result(
+            results,
+            query=query,
+            perfect_query=perfect_query,
+        )
+        if selected_result:
+            if perfect_match:
+                print(f"  Perfect match found for '{query}': {selected_result.get('title')}")
+            return selected_result
+
+    if perfect_match:
+        print(f"  No perfect match found for '{query}'. Skipping.")
     else:
-        if perfect_match:
-            # Look for a perfect match (ignoring case)
-            query_lower = query.lower()
-            for result in results:
-                title = result.get('title', '').lower()
-                if title == query_lower:
-                    print(f"  Perfect match found for '{query}': {result.get('title')}")
-                    return result
-            
-            # If perfect match was required but not found, return None
-            print(f"  No perfect match found for '{query}'. Skipping.")
-        else:
-            # Take the first song result when perfect match is not required
-            return results[0]
-    
-    # If no songs are found, fall back to videos with a separate search
-    print(f"  No song results found for '{query}'. Falling back to video search.")
-    video_results = yt.search(formatted_query, filter='videos', ignore_spelling=True, limit=100)
-    
-    if not video_results:
-        print(f"  No video results found for '{query}'. Skipping.")
-        return None
-    
-    if perfect_match and video_results:
-        # Look for a perfect match in videos if songs weren't found
-        query_lower = query.lower()
-        for result in video_results:
-            title = result.get('title', '').lower()
-            if title == query_lower:
-                print(f"  Perfect video match found for '{query}': {result.get('title')}")
-                return result
-        
-        # If perfect match was required but not found, return None
-        print(f"  No perfect video match found for '{query}'. Skipping.")
-        return None
-    
-    return video_results[0]
+        print(f"  No song or video results found for '{query}'. Skipping.")
+    return None
