@@ -27,20 +27,39 @@ pip install -r requirements.txt
 
 ## Usage
 
-Basic usage:
+### Graphical User Interface (GUI)
+
+By default, running `main.py` without arguments will launch the Graphical User Interface (GUI):
+
 ```
 python main.py
 ```
 
-With command-line arguments:
+The GUI offers:
+- A user-friendly dashboard to configure files and matching options.
+- An **Authentication Assistant** where you can paste raw HTTP request headers directly to configure your connection without typing inside a CLI console.
+- Live progress bars and song-by-song statistics.
+- Direct link to open the newly created YouTube Music playlist in your browser.
+
+### Command-Line Interface (CLI)
+
+To force Command-Line Interface mode or customize execution from a terminal, you can pass arguments:
+
 ```
-python main.py -f songs.txt -t "My Playlist" -p private
+python main.py --cli
+```
+
+Or with custom parameters:
+```
+python main.py -f songs.txt -t "My Playlist" -p private --cli
 ```
 
 ### Command-Line Arguments
 
 | Argument | Description |
 |----------|-------------|
+| `--gui` | Run the Graphical User Interface (default if no other args are provided) |
+| `--cli` | Force running in Command Line Interface mode |
 | `-f`, `--file` | Path to input file with song queries (default: songs.txt) |
 | `-t`, `--title` | Playlist title (default: auto-generated with timestamp) |
 | `-d`, `--description` | Playlist description (default: same as title) |
@@ -68,17 +87,22 @@ Daft Punk - Around the World
 
 ## Authentication
 
-On first run, the script will guide you through setting up authentication with YouTube Music:
+Authentication uses request headers copied from a signed-in YouTube Music browser session.
 
-1. The script will prompt you to create an authentication file
-2. You'll need to extract authentication headers from your browser:
-   - Log into YouTube Music in your browser
-   - Open Developer Tools (F12 or right-click > Inspect)
-   - Go to the Network tab
-   - Refresh the page and look for any request to YouTube Music
-   - Find and copy the request headers
-   - Provide this information when prompted by the script
-3. Authentication data is saved to `headers_auth.json` for future use
+GUI flow:
+- Open the **Authentication Assistant**.
+- Paste raw request headers copied from a `music.youtube.com` network request.
+- The app validates and saves them to `headers_auth.json` or the file you selected.
+
+CLI flow:
+- Pass `--auth` to point at an existing authentication file.
+- If you run in interactive CLI mode and the file is missing, the script can guide you through creating one.
+
+To capture valid headers:
+- Log into YouTube Music in your browser.
+- Open Developer Tools and switch to the Network tab.
+- Refresh the page and pick a request made to `music.youtube.com`.
+- Copy the request headers and save them through the GUI assistant or your auth JSON file.
 
 ## Examples
 
@@ -109,7 +133,7 @@ Log files are named with a timestamp (e.g., `txttoytmusic_20250417_174941.log`).
 
 ## Troubleshooting
 
-- If authentication fails, try recreating the auth file with `-f` option
+- If authentication fails, recreate the auth file or pass the correct file path with `--auth`
 - Check the logs directory for detailed operation logs
 
 ## Disclaimer
