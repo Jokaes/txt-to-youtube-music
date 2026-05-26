@@ -1,6 +1,9 @@
 """Tkinter Graphical User Interface for TxtToYoutubeMusic."""
 
 import os
+import re
+import shutil
+import subprocess
 import sys
 import queue
 import logging
@@ -329,6 +332,10 @@ class YTMusicGUI(tk.Tk):
         stats_card.rowconfigure(7, weight=1)
         self.playlist_btn.grid(row=8, column=0, columnspan=2, sticky="sew", pady=(15, 0))
 
+        # Download Playlist Button
+        self.download_btn = ttk.Button(stats_card, text="Download Playlist as MP3", command=self.download_playlist, state="normal")
+        self.download_btn.grid(row=9, column=0, columnspan=2, sticky="sew", pady=(10, 0))
+
         # ==========================================
         # BOTTOM ROW - LIVE CONSOLE LOGS
         # ==========================================
@@ -403,8 +410,172 @@ class YTMusicGUI(tk.Tk):
         self.log_text.configure(state="disabled")
 
     def open_playlist_in_browser(self):
-        if self.playlist_url:
+        if hasattr(self, 'playlist_url') and self.playlist_url:
             webbrowser.open(self.playlist_url)
+
+    def find_node_runtime(self):
+        node_path = shutil.which("node")
+        if node_path:
+            return node_path
+
+        candidates = [
+            os.path.join(os.environ.get("ProgramFiles", ""), "nodejs", "node.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", ""), "nodejs", "node.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "nodejs", "node.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links", "node.exe"),
+        ]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+
+        return None
+
+    def download_playlist(self):
+        url = getattr(self, 'playlist_url', None)
+        if not url:
+            from tkinter import simpledialog
+            url = simpledialog.askstring("Playlist URL", "Enter YouTube Music Playlist URL:")
+            if not url:
+                return
+
+        try:
+            import yt_dlp
+        except ImportError:
+            messagebox.showerror("Error", "yt-dlp is not installed. Please run:\npip install yt-dlp")
+            return
+
+        node_runtime = self.find_node_runtime()
+        if not node_runtime:
+            messagebox.showerror(
+                "Node.js Required",
+                "Node.js is required for YouTube Music downloads on this system. Please install Node.js LTS and try again.",
+            )
+            return
+
+        browser_cookie = None
+        if messagebox.askyesno("Age-Restricted / Private Videos", "Do you want to extract YouTube cookies from your installed browser? \n\nThis is required if your playlist is private, or contains age-restricted videos."):
+            from tkinter import simpledialog
+            browser = simpledialog.askstring("Browser", "Which browser do you use? (e.g. chrome, edge, firefox, brave, opera, vivaldi)", initialvalue="chrome")
+            if browser:
+                browser_cookie = (browser.lower().strip(), )
+
+        from tkinter import simpledialog
+        start_index = simpledialog.askinteger("Start Item", "Which song number (index) would you like to start downloading from?", initialvalue=1, minvalue=1)
+        if start_index is None: # User cancelled
+            return
+
+        save_dir = filedialog.askdirectory(title="Select Folder to Save MP3s")
+        if not save_dir:
+            return
+
+        def yt_dlp_worker():
+            self.after(0, lambda: self.download_btn.configure(state="disabled", text="Downloading..."))
+            self.after(0, lambda: self.progress_bar.configure(value=0))
+            self.after(0, lambda: self.progress_pct_lbl.configure(text="0% Complete"))
+            self.after(0, lambda: self.progress_txt_lbl.configure(text="Preparing download..."))
+            self.after(0, lambda: self.write_console(f"\nDownloading playlist to {save_dir}...\n", "normal"))
+
+            command = [
+                sys.executable,
+                "-m",
+                "yt_dlp",
+                url,
+                "--newline",
+                "--ignore-errors",
+                "--playlist-start",
+                str(start_index),
+                "--js-runtimes",
+                f"node:{node_runtime}",
+                "--remote-components",
+                "ejs:github",
+                "-f",
+                "bestaudio/best",
+                "-x",
+                "--audio-format",
+                "mp3",
+                "--audio-quality",
+                "192K",
+                "-o",
+                os.path.join(save_dir, "%(playlist_index)s - %(title)s.%(ext)s"),
+            ]
+            if browser_cookie:
+                command.extend(["--cookies-from-browser", browser_cookie[0]])
+
+            playlist_item = 0
+            playlist_total = 0
+
+            def emit_gui_line(raw_line):
+                nonlocal playlist_item, playlist_total
+                clean_line = raw_line.rstrip()
+                if not clean_line:
+                    return
+
+                print(clean_line, flush=True)
+
+                tag = "normal"
+                if clean_line.startswith("ERROR"):
+                    tag = "error"
+                elif clean_line.startswith("WARNING"):
+                    tag = "warning"
+                elif clean_line.startswith("[ExtractAudio]") or clean_line.startswith("Deleting original file"):
+                    tag = "success"
+
+                self.after(0, lambda line=clean_line, line_tag=tag: self.write_console(f"{line}\n", line_tag))
+
+                item_match = re.search(r"\[download\] Downloading item (\d+) of (\d+)", clean_line)
+                if item_match:
+                    playlist_item = int(item_match.group(1))
+                    playlist_total = int(item_match.group(2))
+                    overall_pct = ((playlist_item - 1) / playlist_total) * 100 if playlist_total else 0
+                    self.after(0, lambda pct=overall_pct: self.progress_bar.configure(value=pct))
+                    self.after(0, lambda pct=overall_pct: self.progress_pct_lbl.configure(text=f"{int(pct)}% Complete"))
+                    self.after(0, lambda cur=playlist_item, total=playlist_total: self.progress_txt_lbl.configure(text=f"Downloading item {cur} of {total}"))
+                    return
+
+                percent_match = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%.*(?:ETA\s+(\S+))?", clean_line)
+                if percent_match and playlist_total:
+                    item_pct = float(percent_match.group(1))
+                    eta = percent_match.group(2) or "--:--"
+                    overall_pct = (((playlist_item - 1) + (item_pct / 100.0)) / playlist_total) * 100
+                    self.after(0, lambda pct=overall_pct: self.progress_bar.configure(value=pct))
+                    self.after(0, lambda pct=overall_pct: self.progress_pct_lbl.configure(text=f"{int(pct)}% Complete"))
+                    self.after(0, lambda cur=playlist_item, total=playlist_total, eta_value=eta: self.progress_txt_lbl.configure(text=f"Item {cur}/{total} | ETA {eta_value}"))
+                    return
+
+                if clean_line.startswith("[ExtractAudio]"):
+                    self.after(0, lambda: self.progress_txt_lbl.configure(text="Converting to MP3..."))
+
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                )
+
+                for output_line in process.stdout:
+                    emit_gui_line(output_line)
+
+                return_code = process.wait()
+                if return_code == 0:
+                    self.after(0, lambda: self.progress_bar.configure(value=100))
+                    self.after(0, lambda: self.progress_pct_lbl.configure(text="100% Complete"))
+                    self.after(0, lambda: self.progress_txt_lbl.configure(text="Playlist download complete"))
+                    self.after(0, lambda: self.write_console("\nPlaylist downloaded successfully.\n", "success"))
+                    self.after(0, lambda: messagebox.showinfo("Success", "Playlist downloaded successfully."))
+                else:
+                    self.after(0, lambda: self.write_console(f"\nyt-dlp exited with code {return_code}.\n", "error"))
+                    self.after(0, lambda: messagebox.showerror("Download failed", "yt-dlp exited with an error. Check the console log for details."))
+            except Exception as error:
+                err_msg = str(error)
+                self.after(0, lambda m=err_msg: self.write_console(f"\nError downloading playlist: {m}\n", "error"))
+                self.after(0, lambda: messagebox.showerror("Error", "Could not start playlist download. Check the console log for details."))
+            finally:
+                self.after(0, lambda: self.download_btn.configure(state="normal", text="Download Playlist as MP3"))
+
+        threading.Thread(target=yt_dlp_worker, daemon=True).start()
 
     def request_cancel(self):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -517,6 +688,7 @@ class YTMusicGUI(tk.Tk):
         self.songs_file_ent.configure(state="disabled")
         self.auth_file_ent.configure(state="disabled")
         self.playlist_btn.configure(state="disabled")
+        self.download_btn.configure(state="disabled")
         
         self.stop_requested = False
         self.playlist_url = None
@@ -753,6 +925,7 @@ class YTMusicGUI(tk.Tk):
                 elif msg_type == "playlist_created":
                     self.playlist_url = payload
                     self.playlist_btn.configure(state="normal")
+                    self.download_btn.configure(state="normal")
                     self.write_console(f"Playlist target ready: {self.playlist_url}\n", "success")
                 elif msg_type == "complete":
                     self.worker_thread = None
@@ -760,6 +933,7 @@ class YTMusicGUI(tk.Tk):
                     self.start_btn.configure(state="normal")
                     self.songs_file_ent.configure(state="normal")
                     self.auth_file_ent.configure(state="normal")
+                    self.download_btn.configure(state="normal")
                     
                     if payload.get("success", False):
                         p_title = payload.get("playlist_title", "Custom Playlist")
